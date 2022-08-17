@@ -4,10 +4,12 @@ from config import DATA_FILE, NUM_DOCS, PORT
 import click
 
 #********** modification 04 08 2022 *******************
-
+import logging
 import boto3
-
-
+import botocore
+from botocore.exceptions import ClientError
+import os
+import glob
 import json
 import configparser
 
@@ -15,7 +17,7 @@ def readConfig():
     config = configparser.ConfigParser()
     config.read('config.ini')
     
-    return config['Data-S3']
+    return config['Enriched-Data-S3']
 
 config = readConfig()
 
@@ -37,7 +39,6 @@ class EmbeddingChecker(Executor):
         return filtered_docs
     
     
-
 #***********************************************************************************
 
 
@@ -54,7 +55,7 @@ flow = (
     )
     .add(name = "Filterout_docs_without_embeddings", 
              uses = EmbeddingChecker)
-    .add(name = "Indexer",uses="jinahub://SimpleIndexer", needs='Filterout_docs_without_embeddings'
+    .add(name = "Indexer",uses="jinahub://SimpleIndexer"
          ,  install_requirements=True)
     .needs_all()
 )
@@ -62,46 +63,33 @@ flow = (
 
 
 def index(num_docs=NUM_DOCS):
-    """qa_docs = DocumentArray.from_csv(
-        DATA_FILE, field_resolver={"question": "text"}, size=num_docs
-    )"""
     
     # ****************** modification 04 08 2022 '******************
     s3 = boto3.resource('s3')
     bucket_name = config['bucket_name']
     bucket = s3.Bucket(bucket_name)
     docs = DocumentArray()
+    print(bucket_name)
 
-
-    # Iterates through all the objects, doing the pagination for you. Each obj
-    # is an ObjectSummary, so it doesn't contain the body. You'll need to call
-    # get to get the whole body.
     for obj in bucket.objects.all():
         key = obj.key
         body = obj.get()['Body'].read()
-        #print(key)
-
-        if key.endswith('.json') :
-            #print(type(body))
-            #print(body)
+        if key.endswith('.text') :
             data = body.decode('utf-8') # Decode using the utf-8 encoding
             jdata = json.loads(data)
-            #print(jdata)
-            #print(type(jdata))
-        #print('**********************')
-            for item in jdata['body']:
-                docs.append(Document(text = item['text']
-                       ))
-    print(docs.summary)
+            q_text = ""
+            for item in jdata['ques']:
+                for q in item:
+                    q_text = q_text + " " + q
+                
+                docs.append(Document(text = q_text
+                        ,uri = jdata['pageLink'] ,tags = jdata  ))
     #***************************************************************
 
-        
-    #qa_docs = 
     with flow:
         #docs = flow.index(docs, on_done = store_embeddings ,show_progress=True)
         flow.index(docs,show_progress=True)
-        print(type(docs))
-        #print(docs.summary)
+        print(docs.summary)
 
 
 def search_grpc(string: str):
@@ -114,18 +102,31 @@ def search_grpc(string: str):
     for match in results[0].matches:
         print(match.text)
 
-
+        
+#*************** modification 05 08 2022 **************
+#*******************************************************
 
 def search():
     #with flow:
      #   flow.block()
-    question = Document(text="how much is the training budget?")
+    question = Document(text="what do you know about certificate bonuses?")
 
     with flow:
         results = flow.search(question)
 
-    print(results[0].matches[0].tags["answer"])
-
+    #print(results[0].matches[0].tags["answer"])
+    for m in results[0].matches:
+        answers = m.tags['body']
+        for ans in answers:
+        
+            for key,val in ans.items() :
+                if key == 'text':
+                    print(val)
+        print(m.uri)
+        print('************************')
+    
+    
+    
 @click.command()
 @click.option(
     "--task",
@@ -144,4 +145,3 @@ def main(task: str, num_docs):
 
 if __name__ == "__main__":
     main()
-
